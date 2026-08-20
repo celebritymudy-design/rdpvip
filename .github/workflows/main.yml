@@ -85,7 +85,13 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
+      - name: Route Internet Through My PC
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" set --exit-node=100.102.170.25 --exit-node-allow-lan-access=true
+          Start-Sleep -Seconds 10
+          Write-Host "=== PUBLIC IP AFTER EXIT NODE ==="
+          Invoke-RestMethod -Uri "https://api.ipify.org"
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
