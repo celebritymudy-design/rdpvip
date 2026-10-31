@@ -1,0 +1,33 @@
+name: Five Windows - Same Software
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-setup:
+    name: Windows ${{ matrix.instance }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        instance: [1, 2, 3, 4, 5]
+
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
+
+      - name: Install identical software
+        shell: pwsh
+        run: ./scripts/install-software.ps1
+
+      - name: Verify software and label runner
+        shell: pwsh
+        run: |
+          Write-Host "Windows instance ${{ matrix.instance }} setup complete"
+          choco list --local-only 2>$null; if ($LASTEXITCODE -ne 0) { choco list }
+          Write-Host "Add your existing authorized remote-access step here if applicable."
