@@ -1,0 +1,88 @@
+name: Five RDP - Same Software
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secure-rdp:
+    name: RDP ${{ matrix.instance }}
+    runs-on: windows-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        instance: [1, 2, 3, 4, 5]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install the same software on every Windows runner
+        shell: pwsh
+        run: ./scripts/install-software.ps1
+
+      - name: Create secure RDP user and enable RDP
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            throw 'Set repository secret RDP_PASSWORD first.'
+          }
+          if ($env:RDP_PASSWORD.Length -lt 16) {
+            throw 'RDP_PASSWORD should be at least 16 characters.'
+          }
+          $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          if (-not (Get-LocalUser -Name 'RDP' -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name 'RDP' -Password $securePass -AccountNeverExpires | Out-Null
+          } else {
+            Set-LocalUser -Name 'RDP' -Password $securePass
+          }
+          Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'RDP' -ErrorAction SilentlyContinue
+          # Do not make the RDP account a local administrator.
+          $terminal = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+          $tcp = "$terminal\WinStations\RDP-Tcp"
+          Set-ItemProperty -Path $terminal -Name fDenyTSConnections -Value 0
+          Set-ItemProperty -Path $tcp -Name UserAuthentication -Value 1  # NLA on
+          Set-ItemProperty -Path $tcp -Name SecurityLayer -Value 2      # TLS
+          # Tailnet-only address scope; also restrict access via Tailscale ACLs.
+          New-NetFirewallRule -DisplayName 'RDP via Tailscale Only' -Direction Inbound `
+            -Action Allow -Protocol TCP -LocalPort 3389 -RemoteAddress '100.64.0.0/10' | Out-Null
+          Restart-Service -Name TermService -Force
+
+      - name: Join Tailscale network
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          hostname: gh-rdp-${{ github.run_id }}-${{ matrix.instance }}
+
+      - name: Set optional Tailscale exit node
+        if: ${{ vars.TS_EXIT_NODE_IP != '' }}
+        shell: pwsh
+        env:
+          TS_EXIT_NODE_IP: ${{ vars.TS_EXIT_NODE_IP }}
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" set --exit-node=$env:TS_EXIT_NODE_IP --exit-node-allow-lan-access=true
+          if ($LASTEXITCODE -ne 0) { throw 'Could not enable Tailscale exit node.' }
+
+      - name: Display RDP connection information (no password)
+        shell: pwsh
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $ip = (& $tailscale ip -4 | Select-Object -First 1).Trim()
+          if (-not $ip) { throw 'No Tailscale IP was assigned.' }
+          Write-Host "RDP instance: ${{ matrix.instance }}"
+          Write-Host "RDP address: $ip"
+          Write-Host 'Username: RDP'
+          Write-Host 'Password: value of GitHub secret RDP_PASSWORD (never printed to logs)'
+          Write-Host 'Connect from a device in the same permitted Tailscale network.'
+
+      - name: Keep runner running for authorized temporary access
+        shell: pwsh
+        run: |
+          Write-Host 'Temporary runner is active. Cancel job when finished.'
+          while ($true) { Start-Sleep -Seconds 300 }
